@@ -1,9 +1,4 @@
 const ExcelJS = require('exceljs');
-const path = require('path');
-const fs = require('fs');
-
-const OUTPUT_DIR = path.join(__dirname, 'output');
-if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
 // Column definition matching sample format
 const LISTING_COLS = [
@@ -19,16 +14,16 @@ const LISTING_COLS = [
   { header: 'otherLinks', key: 'otherLinks',  width: 80 },
 ];
 
-// ─── XLSX Export ─────────────────────────────────────────────────────────────
-async function exportXLSX(data, jobId) {
+// ─── XLSX Export — returns a Buffer ──────────────────────────────────────────
+async function exportXLSX(data) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Web Scraper';
   workbook.created = new Date();
 
-  // ── Sheet 1: Listings (primary – matches sample format) ──────────────────
+  // ── Sheet 1: Listings ──────────────────────────────────────────────────────
   const listingSheet = workbook.addWorksheet('Listings');
   listingSheet.columns = LISTING_COLS;
-  styleHeader(listingSheet, 'FF16A34A'); // green header for primary sheet
+  styleHeader(listingSheet, 'FF16A34A');
 
   if (data.listings.length > 0) {
     data.listings.forEach((row) => listingSheet.addRow(row));
@@ -109,16 +104,13 @@ async function exportXLSX(data, jobId) {
   styleHeader(metaSheet);
   Object.entries(data.meta).forEach(([k, v]) => metaSheet.addRow({ field: k, value: v }));
 
-  const filePath = path.join(OUTPUT_DIR, `${jobId}.xlsx`);
-  await workbook.xlsx.writeFile(filePath);
-  return filePath;
+  return workbook.xlsx.writeBuffer();
 }
 
-// ─── CSV Export ───────────────────────────────────────────────────────────────
-async function exportCSV(data, jobId) {
+// ─── CSV Export — returns a string ───────────────────────────────────────────
+function exportCSV(data) {
   const sections = [];
 
-  // Primary: Listings in sample format
   sections.push('=== LISTINGS ===');
   sections.push(csvRow(['name', 'hall', 'stand', 'website', 'facebook', 'instagram', 'youtube', 'twitter', 'linkedin', 'otherLinks']));
   if (data.listings.length > 0) {
@@ -130,7 +122,6 @@ async function exportCSV(data, jobId) {
   }
   sections.push('');
 
-  // All Links
   if (data.links.length > 0) {
     sections.push('=== ALL LINKS ===');
     sections.push(csvRow(['Text', 'URL']));
@@ -138,7 +129,6 @@ async function exportCSV(data, jobId) {
     sections.push('');
   }
 
-  // Tables
   data.tables.forEach((table, idx) => {
     sections.push(`=== TABLE ${idx + 1} ===`);
     if (table.headers.length > 0) sections.push(csvRow(table.headers));
@@ -146,7 +136,6 @@ async function exportCSV(data, jobId) {
     sections.push('');
   });
 
-  // Headings
   if (data.headings.length > 0) {
     sections.push('=== HEADINGS ===');
     sections.push(csvRow(['Level', 'Text']));
@@ -154,7 +143,6 @@ async function exportCSV(data, jobId) {
     sections.push('');
   }
 
-  // Paragraphs
   if (data.paragraphs.length > 0) {
     sections.push('=== PARAGRAPHS ===');
     sections.push(csvRow(['#', 'Text']));
@@ -162,14 +150,11 @@ async function exportCSV(data, jobId) {
     sections.push('');
   }
 
-  // Meta
   sections.push('=== META ===');
   sections.push(csvRow(['Field', 'Value']));
   Object.entries(data.meta).forEach(([k, v]) => sections.push(csvRow([k, v])));
 
-  const filePath = path.join(OUTPUT_DIR, `${jobId}.csv`);
-  fs.writeFileSync(filePath, sections.join('\n'), 'utf8');
-  return filePath;
+  return sections.join('\n');
 }
 
 function csvRow(cells) {
@@ -184,4 +169,4 @@ function styleHeader(sheet, color = 'FF2563EB') {
   headerRow.height = 20;
 }
 
-module.exports = { exportXLSX, exportCSV, OUTPUT_DIR };
+module.exports = { exportXLSX, exportCSV };

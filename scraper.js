@@ -4,11 +4,13 @@ const cheerio = require('cheerio');
 const DEFAULT_MAX_PAGES  = 100;
 const DEFAULT_MAX_DEPTH  = 2;
 const CONCURRENCY        = 5;   // parallel browser pages
+const IDLE_TIMEOUT_MS    = 10_000; // auto-stop if no new content for 10 seconds
 
 // ─── Public entry point ───────────────────────────────────────────────────────
 async function crawlWebsite(seedUrl, onProgress, options = {}) {
-  const maxPages = options.maxPages || DEFAULT_MAX_PAGES;
-  const maxDepth = options.maxDepth !== undefined ? options.maxDepth : DEFAULT_MAX_DEPTH;
+  const maxPages  = options.maxPages  || DEFAULT_MAX_PAGES;
+  const maxDepth  = options.maxDepth  !== undefined ? options.maxDepth : DEFAULT_MAX_DEPTH;
+  const shouldStop = options.shouldStop || (() => false);
 
   let browser;
   try {
@@ -26,13 +28,24 @@ async function crawlWebsite(seedUrl, onProgress, options = {}) {
     const queue     = [{ url: seedUrl, depth: 0 }];
 
     // Aggregated results
-    const allListings  = [];               // final company records
-    const nameIndex    = new Map();        // name → index in allListings (for merge)
-    const allLinksMap  = new Map();        // url → text  (all links seen)
-    let   seedFullData = null;             // comprehensive parse of seed page
+    const allListings  = [];
+    const nameIndex    = new Map();
+    const allLinksMap  = new Map();
+    let   seedFullData = null;
     let   pagesVisited = 0;
 
+    // Idle tracking — cumulative ms spent in batches that found no new listings
+    let idleMs = 0;
+    let stoppedEarly = false;
+
     while (queue.length > 0 && pagesVisited < maxPages) {
+      // ── Check stop signal ────────────────────────────────────────────────
+      if (shouldStop()) {
+        stoppedEarly = true;
+        onProgress({ stage: 'crawling', message: 'Stop requested. Preparing results...' });
+        break;
+      }
+
       // Take up to CONCURRENCY items
       const batch = [];
       while (queue.length > 0 && batch.length < CONCURRENCY && pagesVisited + batch.length < maxPages) {
@@ -46,6 +59,9 @@ async function crawlWebsite(seedUrl, onProgress, options = {}) {
         pagesVisited,
         pagesTotal: Math.min(pagesVisited + batch.length + queue.length, maxPages),
       });
+
+      const listingsBefore = allListings.length;
+      const batchStart = Date.now();
 
       // Fetch all pages in the batch in parallel
       const fetched = await Promise.all(
@@ -63,7 +79,7 @@ async function crawlWebsite(seedUrl, onProgress, options = {}) {
         const $ = cheerio.load(html);
         $('script, style, noscript, iframe, [hidden]').remove();
 
-        // Full parse (tables, headings, paragraphs…) only for the seed page
+        // Full parse only for the seed page
         if (pageUrl === seedUrl && !seedFullData) {
           seedFullData = parseHTML(html, seedUrl, title, finalUrl, onProgress);
         }
@@ -99,9 +115,23 @@ async function crawlWebsite(seedUrl, onProgress, options = {}) {
           }
         });
       }
+
+      // ── Idle tracking: accumulate time only when no new listings found ───
+      if (allListings.length > listingsBefore) {
+        idleMs = 0;  // found listings — reset idle counter
+      } else {
+        idleMs += Date.now() - batchStart;
+      }
+
+      // ── Auto-stop if idle for 10+ cumulative seconds ─────────────────────
+      if (pagesVisited > 0 && idleMs >= IDLE_TIMEOUT_MS) {
+        stoppedEarly = true;
+        onProgress({ stage: 'crawling', message: 'No listings found for 10 seconds. Auto-stopping...' });
+        break;
+      }
     }
 
-    // Build final result (base = seed page full data if available)
+    // Build final result
     const result = seedFullData || {
       meta: {
         url: seedUrl, originalUrl: seedUrl, title: '',
@@ -112,12 +142,13 @@ async function crawlWebsite(seedUrl, onProgress, options = {}) {
 
     result.listings   = allListings;
     result.links      = Array.from(allLinksMap.entries()).map(([url, text]) => ({ url, text }));
-    result.crawlStats = { pagesVisited, listingsFound: allListings.length };
+    result.crawlStats = { pagesVisited, listingsFound: allListings.length, stoppedEarly };
 
-    onProgress({
-      stage: 'done',
-      message: `Done! Crawled ${pagesVisited} page${pagesVisited !== 1 ? 's' : ''}  — ${allListings.length} companies found.`,
-    });
+    const doneMsg = stoppedEarly
+      ? `Stopped early after ${pagesVisited} page${pagesVisited !== 1 ? 's' : ''} — ${allListings.length} companies found.`
+      : `Done! Crawled ${pagesVisited} page${pagesVisited !== 1 ? 's' : ''} — ${allListings.length} companies found.`;
+
+    onProgress({ stage: 'done', message: doneMsg });
 
     return result;
   } finally {
@@ -151,7 +182,6 @@ function mergeListingIn(listing, allListings, nameIndex) {
 
   if (nameIndex.has(key)) {
     const existing = allListings[nameIndex.get(key)];
-    // Fill in any missing fields from the new data
     const fields = ['hall','stand','website','facebook','instagram','youtube','twitter','linkedin','otherLinks'];
     for (const f of fields) {
       if (!existing[f] && listing[f]) existing[f] = listing[f];
@@ -273,15 +303,11 @@ function parseHTML(html, originalUrl, pageTitle, finalUrl, onProgress) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LISTING EXTRACTOR
-// Works on any page — directory cards OR individual company detail pages.
-// Extracts: name, hall, stand, website, facebook, instagram, youtube,
-//           twitter, linkedin, otherLinks
 // ─────────────────────────────────────────────────────────────────────────────
 function extractListings($, finalUrl) {
   let baseHost = '';
   try { baseHost = new URL(finalUrl).hostname; } catch (_) {}
 
-  // ── 1. Find repeating card containers ──────────────────────────────────────
   const candidateSelectors = [
     '[class*="exhibitor"]', '[class*="company"]', '[class*="vendor"]',
     '[class*="participant"]', '[class*="brand"]', '[class*="booth"]',
@@ -300,7 +326,6 @@ function extractListings($, finalUrl) {
     }
   }
 
-  // ── 2. Fallback: divs with heading + links ─────────────────────────────────
   if (bestElements.length === 0) {
     $('div').each((_, el) => {
       const $el = $(el);
@@ -309,18 +334,15 @@ function extractListings($, finalUrl) {
     });
   }
 
-  // ── 3. If still nothing (single company detail page), treat whole body ─────
   const isSinglePage = bestElements.length === 0;
   if (isSinglePage) bestElements = [$('body')[0]].filter(Boolean);
 
-  // ── 4. Extract each element ────────────────────────────────────────────────
   const listings = [];
   const seen = new Set();
 
   bestElements.forEach((el) => {
     const $el = $(el);
 
-    // Name
     const name = (
       $el.find('h1,h2,h3,h4,h5,h6').first().text().trim() ||
       $el.find('strong, b, .title, .name, [class*="name"], [class*="title"]').first().text().trim() ||
@@ -330,7 +352,6 @@ function extractListings($, finalUrl) {
     if (!name || name.length < 2 || seen.has(name)) return;
     seen.add(name);
 
-    // Hall & Stand
     const rawText = $el.text().replace(/\s+/g, ' ');
 
     const hallPattern  = /(?:hall|pavilion|zone|sheikh\s+\w+)[^,\n]{0,60}/i;
@@ -353,7 +374,6 @@ function extractListings($, finalUrl) {
     if (hall && stand && !hall.toLowerCase().includes('stand'))
       hall = `${hall}  Stand: ${stand}`;
 
-    // ── Categorise Links ──────────────────────────────────────────────────────
     let website = '', facebook = '', instagram = '', youtube = '', twitter = '', linkedin = '';
     const others = [];
 

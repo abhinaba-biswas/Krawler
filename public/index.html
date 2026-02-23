@@ -118,6 +118,14 @@
     }
     .btn-excel:hover { background: #155a32; }
 
+    .btn-stop {
+      background: var(--red);
+      color: #fff;
+      display: none;
+    }
+    .btn-stop:hover:not(:disabled) { background: #b91c1c; }
+    .btn-stop:disabled { background: var(--gray-300); cursor: not-allowed; }
+
     /* Status bar */
     #status-bar {
       display: none;
@@ -529,6 +537,7 @@
         <option value="500">500 pages</option>
       </select>
       <button id="scrape-btn" class="btn-primary" onclick="startScrape()">&#x1F50D; Scrape</button>
+      <button id="stop-btn" class="btn-stop" onclick="stopScrape()">&#x23F9; Stop</button>
     </div>
     <p style="font-size:.78rem;color:var(--gray-500);margin-top:8px;">Crawls the page + all sub-links simultaneously up to the page limit. Higher limits = more complete data but longer runtime.</p>
   </div>
@@ -620,6 +629,9 @@
     if (!url) return alert('Please enter a URL.');
     setStatus('running', 'Connecting...');
     document.getElementById('scrape-btn').disabled = true;
+    document.getElementById('stop-btn').style.display = 'inline-block';
+    document.getElementById('stop-btn').disabled = false;
+    document.getElementById('stop-btn').textContent = '⏹ Stop';
     document.getElementById('results').style.display = 'none';
 
     fetch('/api/scrape', {
@@ -636,11 +648,20 @@
       .catch((err) => { setStatus('error', err.message); resetBtn(); });
   }
 
+  function stopScrape() {
+    if (!currentJobId) return;
+    document.getElementById('stop-btn').disabled = true;
+    document.getElementById('stop-btn').textContent = 'Stopping...';
+    setStatus('running', 'Stop requested — finishing current batch...');
+    fetch(`/api/stop/${currentJobId}`, { method: 'POST' }).catch(() => {});
+  }
+
   socket.on('job:progress', ({ message }) => setStatus('running', message));
 
-  socket.on('job:done', ({ meta, summary, previewData }) => {
+  socket.on('job:done', ({ meta, summary, previewData, stoppedEarly }) => {
     window._xlsPreviewData = previewData;
-    setStatus('done', `Done! — ${meta.title || meta.url}`);
+    const label = stoppedEarly ? 'Stopped' : 'Done';
+    setStatus('done', `${label}! — ${meta.title || meta.url}`);
     resetBtn();
     renderResults(summary, previewData);
   });
@@ -657,7 +678,10 @@
     document.getElementById('status-spinner').style.display = type === 'running' ? 'block' : 'none';
   }
 
-  function resetBtn() { document.getElementById('scrape-btn').disabled = false; }
+  function resetBtn() {
+    document.getElementById('scrape-btn').disabled = false;
+    document.getElementById('stop-btn').style.display = 'none';
+  }
 
   function download(fmt) {
     if (currentJobId) window.location.href = `/api/download/${currentJobId}/${fmt}`;
@@ -676,18 +700,26 @@
 
     // Badges
     const grid = document.getElementById('summary-grid');
-    grid.innerHTML = [
+    const badges = [
       { num: summary.listings,     lbl: 'Companies',    primary: true },
       { num: summary.pagesVisited, lbl: 'Pages Crawled', primary: true },
       { num: summary.links,        lbl: 'Links',         primary: false },
       { num: summary.tables,       lbl: 'Tables',        primary: false },
       { num: summary.headings,     lbl: 'Headings',      primary: false },
       { num: summary.images,       lbl: 'Images',        primary: false },
-    ].map((i) => `
+    ];
+    let html = badges.map((i) => `
       <div class="badge ${i.primary ? 'primary' : 'secondary'}">
         <div class="num">${i.num}</div>
         <div class="lbl">${i.lbl}</div>
       </div>`).join('');
+    if (summary.stoppedEarly) {
+      html += `<div class="badge" style="background:#fef3c7;border:1px solid #fcd34d;">
+        <div class="num" style="font-size:1.1rem;color:#b45309;">⏹</div>
+        <div class="lbl" style="color:#92400e;">Partial</div>
+      </div>`;
+    }
+    grid.innerHTML = html;
 
     renderListings(data.listings, data.meta);
     renderLinks(data.links);

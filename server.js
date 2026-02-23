@@ -1,11 +1,12 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const { crawlWebsite } = require('./scraper');
-const { exportXLSX, exportCSV, OUTPUT_DIR } = require('./exporter');
+const { exportXLSX, exportCSV } = require('./exporter');
+const { initDB, saveResult, getXlsx, getCsv, deleteOldResults } = require('./db');
 
 const app = express();
 const server = http.createServer(app);
@@ -36,17 +37,26 @@ app.post('/api/scrape', async (req, res) => {
     status: 'pending', url,
     maxPages: parseInt(maxPages) || 100,
     maxDepth: maxDepth !== undefined ? parseInt(maxDepth) : 2,
+    stopRequested: false,
     createdAt: new Date().toISOString(),
   };
 
   res.json({ jobId });
 
-  // Run scrape asynchronously
   runScrapeJob(jobId, url).catch((err) => {
     jobs[jobId].status = 'error';
     jobs[jobId].error = err.message;
     io.to(jobId).emit('job:error', { jobId, error: err.message });
   });
+});
+
+// ─── API: Stop Scrape ───────────────────────────────────────────────────────
+app.post('/api/stop/:jobId', (req, res) => {
+  const job = jobs[req.params.jobId];
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (job.status !== 'running') return res.status(400).json({ error: 'Job is not running' });
+  job.stopRequested = true;
+  res.json({ ok: true });
 });
 
 async function runScrapeJob(jobId, url) {
@@ -60,26 +70,32 @@ async function runScrapeJob(jobId, url) {
       jobs[jobId].progress = progress;
       io.to(jobId).emit('job:progress', { jobId, ...progress });
     },
-    { maxPages: job.maxPages, maxDepth: job.maxDepth }
+    {
+      maxPages: job.maxPages,
+      maxDepth: job.maxDepth,
+      shouldStop: () => job.stopRequested,
+    }
   );
 
   jobs[jobId].status = 'exporting';
-  io.to(jobId).emit('job:progress', { jobId, stage: 'exporting', message: 'Generating files...' });
+  io.to(jobId).emit('job:progress', { jobId, stage: 'exporting', message: 'Saving to database...' });
 
-  const [xlsxPath, csvPath] = await Promise.all([
-    exportXLSX(data, jobId),
-    exportCSV(data, jobId),
+  const [xlsxBuffer, csvString] = await Promise.all([
+    exportXLSX(data),
+    Promise.resolve(exportCSV(data)),
   ]);
+
+  await saveResult(jobId, url, xlsxBuffer, csvString);
 
   jobs[jobId].status = 'done';
   jobs[jobId].data = data;
-  jobs[jobId].files = { xlsx: xlsxPath, csv: csvPath };
 
   io.to(jobId).emit('job:done', {
     jobId,
     meta: data.meta,
     summary: buildSummary(data),
     previewData: buildPreview(data),
+    stoppedEarly: data.crawlStats?.stoppedEarly || false,
   });
 }
 
@@ -92,6 +108,7 @@ function buildSummary(data) {
     paragraphs: data.paragraphs.length,
     images:    data.images.length,
     pagesVisited: data.crawlStats?.pagesVisited || 1,
+    stoppedEarly: data.crawlStats?.stoppedEarly || false,
   };
 }
 
@@ -119,8 +136,8 @@ app.get('/api/status/:jobId', (req, res) => {
   res.json({ status: job.status, progress: job.progress, error: job.error });
 });
 
-// ─── API: Download ──────────────────────────────────────────────────────────
-app.get('/api/download/:jobId/:format', (req, res) => {
+// ─── API: Download (served from database) ───────────────────────────────────
+app.get('/api/download/:jobId/:format', async (req, res) => {
   const { jobId, format } = req.params;
   const job = jobs[jobId];
 
@@ -128,13 +145,26 @@ app.get('/api/download/:jobId/:format', (req, res) => {
   if (job.status !== 'done') return res.status(400).json({ error: 'Job not complete' });
   if (!['xlsx', 'csv'].includes(format)) return res.status(400).json({ error: 'Invalid format' });
 
-  const filePath = job.files[format];
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
-
   const hostname = new URL(job.url).hostname.replace(/\./g, '_');
   const filename = `${hostname}_scrape.${format}`;
 
-  res.download(filePath, filename);
+  try {
+    if (format === 'xlsx') {
+      const data = await getXlsx(jobId);
+      if (!data) return res.status(404).json({ error: 'File not found in database' });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(data);
+    } else {
+      const data = await getCsv(jobId);
+      if (!data) return res.status(404).json({ error: 'File not found in database' });
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(data);
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Database error: ' + err.message });
+  }
 });
 
 // ─── Socket.io ──────────────────────────────────────────────────────────────
@@ -142,7 +172,6 @@ io.on('connection', (socket) => {
   socket.on('join:job', (jobId) => {
     socket.join(jobId);
 
-    // If job already done, send result immediately
     const job = jobs[jobId];
     if (job?.status === 'done') {
       socket.emit('job:done', {
@@ -150,6 +179,7 @@ io.on('connection', (socket) => {
         meta: job.data.meta,
         summary: buildSummary(job.data),
         previewData: buildPreview(job.data),
+        stoppedEarly: job.data.crawlStats?.stoppedEarly || false,
       });
     } else if (job?.status === 'error') {
       socket.emit('job:error', { jobId, error: job.error });
@@ -158,12 +188,15 @@ io.on('connection', (socket) => {
 });
 
 // ─── Cleanup old jobs (older than 1 hour) ──────────────────────────────────
-setInterval(() => {
-  const cutoff = Date.now() - 60 * 60 * 1000;
+setInterval(async () => {
+  const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+  try {
+    await deleteOldResults(cutoff);
+  } catch (err) {
+    console.error('Cleanup error:', err.message);
+  }
   Object.entries(jobs).forEach(([id, job]) => {
-    if (new Date(job.createdAt).getTime() < cutoff) {
-      if (job.files?.xlsx && fs.existsSync(job.files.xlsx)) fs.unlinkSync(job.files.xlsx);
-      if (job.files?.csv && fs.existsSync(job.files.csv)) fs.unlinkSync(job.files.csv);
+    if (new Date(job.createdAt).getTime() < cutoff.getTime()) {
       delete jobs[id];
     }
   });
@@ -171,6 +204,15 @@ setInterval(() => {
 
 // ─── Start ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 6969;
-server.listen(PORT, () => {
-  console.log(`\n🌐 Web Scraper running at http://localhost:${PORT}\n`);
-});
+
+initDB()
+  .then(() => {
+    server.listen(PORT, () => {
+      console.log(`\n🌐 Web Scraper running at http://localhost:${PORT}\n`);
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to connect to database:', err.message);
+    console.error('Make sure DATABASE_URL is set correctly in your .env file');
+    process.exit(1);
+  });
