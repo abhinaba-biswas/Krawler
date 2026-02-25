@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import AliasChoices, BaseModel, Field, HttpUrl, field_validator
 
 
 # ── Request schemas ────────────────────────────────────────────────────────────
@@ -77,7 +77,9 @@ class CrawlResultItem(BaseModel):
     title: Optional[str] = None
     content_markdown: Optional[str] = None
     content_html: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = Field(
+        None, validation_alias=AliasChoices("page_metadata", "metadata")
+    )
     links: Optional[List[str]] = None
     structured_data: Optional[Dict[str, Any]] = None
     status_code: Optional[int] = None
@@ -86,7 +88,7 @@ class CrawlResultItem(BaseModel):
     screenshot_key: Optional[str] = None
     timestamp: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
 
 class CrawlResultsResponse(BaseModel):

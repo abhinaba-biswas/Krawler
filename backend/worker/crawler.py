@@ -24,6 +24,7 @@ from worker.metrics import (
     captcha_detections_total,
     cloudflare_blocks_total,
     crawl_duration_seconds,
+    crawl_jobs_total,
     crawl_urls_total,
     frontier_size as frontier_size_gauge,
     job_duration_seconds,
@@ -139,7 +140,11 @@ async def _crawl_web(
             break
 
         # Remove pulled URLs from frontier
-        batch_urls = [item[0] for item in batch_raw]
+        # Redis returns bytes by default; decode to str so URLs are usable as strings
+        batch_urls = [
+            item[0].decode() if isinstance(item[0], bytes) else item[0]
+            for item in batch_raw
+        ]
         await redis.zrem(fkey, *batch_urls)
         await redis.sadd(vkey, *batch_urls)
 
@@ -148,11 +153,13 @@ async def _crawl_web(
 
         tasks = [
             _process_url(
-                db, redis, job_id, url, int(score), depth, render_js,
+                db, redis, job_id,
+                url_str.decode() if isinstance(url_str, bytes) else url_str,
+                int(score), depth, render_js,
                 output_format, screenshot, restrict_domain, respect_robots,
                 seed_domain, fkey, vkey, rate_limit_rps, proxy_url, stats, semaphore,
             )
-            for url, score in batch_raw
+            for url_str, score in batch_raw
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -300,7 +307,7 @@ async def _crawl_ios(
         source_type="ios_app",
         title=result.name,
         content_markdown=f"# {result.name}\n\n{result.description or ''}",
-        metadata={
+        page_metadata={
             "developer": result.developer,
             "category": result.category,
             "rating": result.rating,
@@ -342,7 +349,7 @@ async def _save_result(
         title=extracted.get("title"),
         content_markdown=extracted.get("content_markdown"),
         content_html=extracted.get("content_html"),
-        metadata=extracted.get("metadata", {}),
+        page_metadata=extracted.get("metadata", {}),
         links=extracted.get("links", []),
         structured_data=extracted.get("structured_data", {}),
         status_code=status_code,

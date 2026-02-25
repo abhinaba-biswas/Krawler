@@ -67,7 +67,7 @@ class CrawlResult(Base):
     title = Column(Text)
     content_markdown = Column(Text)
     content_html = Column(Text)
-    metadata = Column(JSONB, default=dict)
+    page_metadata = Column("metadata", JSONB, default=dict)
     links = Column(JSONB, default=list)
     structured_data = Column(JSONB, default=dict)
     status_code = Column(Integer)

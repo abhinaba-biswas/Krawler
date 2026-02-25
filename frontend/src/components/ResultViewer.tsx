@@ -3,8 +3,8 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { SyntaxHighlighter } from "react-syntax-highlighter";
-import { atomOneDark } from "react-syntax-highlighter/dist/esm/styles/hljs";
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { ExternalLink, FileText, Code, Link as LinkIcon } from "lucide-react";
 import { clsx } from "clsx";
 import type { CrawlResultItem } from "@/lib/types";
@@ -100,7 +100,7 @@ export function ResultViewer({ result }: Props) {
         {tab === "json" && (
           <SyntaxHighlighter
             language="json"
-            style={atomOneDark}
+            style={vscDarkPlus}
             customStyle={{ borderRadius: "0.5rem", fontSize: "0.75rem" }}
           >
             {JSON.stringify(
@@ -145,7 +145,7 @@ export function ResultViewer({ result }: Props) {
         {tab === "metadata" && (
           <SyntaxHighlighter
             language="json"
-            style={atomOneDark}
+            style={vscDarkPlus}
             customStyle={{ borderRadius: "0.5rem", fontSize: "0.75rem" }}
           >
             {JSON.stringify(result.metadata ?? {}, null, 2)}

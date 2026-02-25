@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ArrowLeft, CheckCircle2, Clock, Globe, Loader2,
+  ArrowLeft, CheckCircle2, Clock, Download, Globe, Loader2,
   RefreshCw, StopCircle, XCircle
 } from "lucide-react";
 import Link from "next/link";
@@ -22,13 +22,14 @@ export default function CrawlDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<CrawlResultItem | null>(null);
+  const [downloading, setDownloading] = useState<string | null>(null);
   const PAGE_SIZE = 20;
 
   const { data, refetch, isFetching } = useQuery<CrawlResultsResponse>({
     queryKey: ["crawl-results", id, page],
     queryFn: () => api.results(id, PAGE_SIZE, page * PAGE_SIZE),
-    refetchInterval: (data) =>
-      data && TERMINAL.has(data.job.status) ? false : 3000,
+    refetchInterval: (query) =>
+      query.state.data && TERMINAL.has(query.state.data.job.status) ? false : 3000,
   });
 
   const job = data?.job;
@@ -48,6 +49,31 @@ export default function CrawlDetailPage() {
       refetch();
     } catch {
       toast.error("Could not cancel job");
+    }
+  };
+
+  const handleExport = async (fmt: "csv" | "xlsx" | "numbers") => {
+    setDownloading(fmt);
+    try {
+      const base = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const key = process.env.NEXT_PUBLIC_API_KEY ?? "";
+      const url = `${base}/api/export/${id}?format=${fmt}`;
+      const res = await fetch(url, {
+        headers: key ? { "X-API-Key": key } : {},
+      });
+      if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+      const blob = await res.blob();
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = `crawl_${id.slice(0, 8)}.${fmt}`;
+      a.click();
+      URL.revokeObjectURL(href);
+      toast.success(`Downloaded as .${fmt}`);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Export failed");
+    } finally {
+      setDownloading(null);
     }
   };
 
@@ -92,14 +118,36 @@ export default function CrawlDetailPage() {
               Cancel
             </button>
           )}
+          {/* Export buttons – shown when job is completed */}
+          {job.status === "completed" && (
+            <div className="flex items-center gap-1.5 border-l border-gray-200 pl-3 ml-1">
+              {(["xlsx", "csv", "numbers"] as const).map((fmt) => (
+                <button
+                  key={fmt}
+                  onClick={() => handleExport(fmt)}
+                  disabled={downloading !== null}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all
+                    bg-white border-gray-200 text-gray-700 hover:bg-brand-50 hover:border-brand-400 hover:text-brand-700
+                    active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={`Download as .${fmt}`}
+                >
+                  {downloading === fmt
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Download className="w-3.5 h-3.5" />
+                  }
+                  {fmt.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <StatsCard label="URLs crawled"  value={job.stats.urls_crawled ?? 0}  icon={Globe}        color="blue" />
-        <StatsCard label="URLs queued"   value={job.stats.urls_queued ?? 0}   icon={Clock}        color="purple" />
-        <StatsCard label="URLs failed"   value={job.stats.urls_failed ?? 0}   icon={XCircle}      color="red" />
+        <StatsCard label="URLs crawled" value={job.stats.urls_crawled ?? 0} icon={Globe} color="blue" />
+        <StatsCard label="URLs queued" value={job.stats.urls_queued ?? 0} icon={Clock} color="purple" />
+        <StatsCard label="URLs failed" value={job.stats.urls_failed ?? 0} icon={XCircle} color="red" />
         <StatsCard label="Duration"
           value={job.stats.duration_s ? `${job.stats.duration_s}s` : isTerminal ? "—" : "Running…"}
           icon={CheckCircle2} color="green"
@@ -126,9 +174,8 @@ export default function CrawlDetailPage() {
                 <li key={r.id}>
                   <button
                     onClick={() => setSelected(r)}
-                    className={`w-full text-left px-3 py-2.5 hover:bg-gray-50 transition-colors ${
-                      selected?.id === r.id ? "bg-brand-50 border-l-2 border-brand-600" : ""
-                    }`}
+                    className={`w-full text-left px-3 py-2.5 hover:bg-gray-50 transition-colors ${selected?.id === r.id ? "bg-brand-50 border-l-2 border-brand-600" : ""
+                      }`}
                   >
                     <p className="text-xs font-medium text-gray-900 truncate">
                       {r.title || r.url}

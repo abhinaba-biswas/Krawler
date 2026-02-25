@@ -123,13 +123,13 @@ async def _fetch_static(
     proxy_url: Optional[str] = None,
 ) -> FetchResult:
     headers = random_headers()
-    proxies = proxy_url or None
+    proxy = proxy_url or None
     async with httpx.AsyncClient(
         headers=headers,
         timeout=timeout,
         follow_redirects=True,
         http2=True,
-        proxies=proxies,
+        proxy=proxy,
         verify=False,
     ) as client:
         resp = await client.get(url)

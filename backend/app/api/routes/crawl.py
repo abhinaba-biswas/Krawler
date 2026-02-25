@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -20,6 +20,8 @@ from app.utils.logging import get_logger
 log = get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["crawl"])
 
+
+# ── Crawl jobs ──────────────────────────────────────────────────────────────────
 
 @router.post("/crawl", response_model=CrawlJobResponse, status_code=202)
 async def create_crawl(req: CrawlRequest, db: AsyncSession = Depends(get_db)):
@@ -73,6 +75,45 @@ async def cancel_job(crawl_id: UUID, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Job not found or not cancellable")
     return {"cancelled": True, "job_id": str(crawl_id)}
 
+
+# ── Export ──────────────────────────────────────────────────────────────────────
+
+_MIME = {
+    "csv":     "text/csv",
+    "xlsx":    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "numbers": "application/x-iwork-numbers-sffnumbers",
+}
+
+
+@router.get("/export/{crawl_id}")
+async def export_results(
+    crawl_id: UUID,
+    format: str = Query("xlsx", pattern="^(csv|xlsx|numbers)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Download all crawl results as CSV, XLSX, or Apple Numbers.
+    Columns: name | hall | stand | website | facebook | instagram | youtube
+    """
+    from app.services.export_service import export_job
+
+    try:
+        data = await export_job(crawl_id, format, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log.error("Export failed", job_id=str(crawl_id), fmt=format, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+    filename = f"crawl_{str(crawl_id)[:8]}.{format}"
+    return Response(
+        content=data,
+        media_type=_MIME[format],
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── iOS scraper ─────────────────────────────────────────────────────────────────
 
 @router.post("/scrape/ios")
 async def scrape_ios(url: str = Query(..., description="Apple App Store URL")):

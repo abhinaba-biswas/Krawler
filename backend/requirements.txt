@@ -42,3 +42,7 @@ tenacity>=9.0.0
 fake-useragent>=2.0.3
 python-multipart>=0.0.20
 anyio>=4.7.0
+
+# Export (CSV / XLSX / Numbers)
+openpyxl>=3.1.0
+numbers-parser>=4.4.0

@@ -59,6 +59,15 @@ export const api = {
     await client.post(`/api/cancel/${id}`);
   },
 
+  // Build a download URL for the export endpoint (does not fire a request itself)
+  exportUrl(id: string, format: "csv" | "xlsx" | "numbers"): string {
+    const base = process.env.NEXT_PUBLIC_API_URL ?? "";
+    const key = process.env.NEXT_PUBLIC_API_KEY ?? "";
+    const params = new URLSearchParams({ format });
+    if (key) params.set("x_api_key", key);
+    return `${base}/api/export/${id}?${params.toString()}`;
+  },
+
   // Health check
   async health(): Promise<{ status: string; checks: Record<string, string> }> {
     const { data } = await client.get("/health");
