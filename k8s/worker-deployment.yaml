@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: krawler-worker
+  namespace: krawler
+  labels:
+    app: krawler-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: krawler-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: krawler-worker
+    spec:
+      # Allow graceful job completion on shutdown
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: krawler-worker:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: krawler-config
+            - secretRef:
+                name: krawler-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          # Playwright requires shared memory
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import arq; print('ok')"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+---
+# Horizontal Pod Autoscaler for workers
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: krawler-worker-hpa
+  namespace: krawler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: krawler-worker
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

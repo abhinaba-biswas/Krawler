@@ -1,0 +1,19 @@
+{
+  "name": "Krawler",
+  "short_name": "Krawler",
+  "description": "Distributed web crawling and data extraction platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#4f5ef7",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "utilities"],
+  "orientation": "any"
+}
